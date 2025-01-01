@@ -1,0 +1,121 @@
+name: test
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths-ignore:
+      - '**/README.md'
+      - scripts/test-vars.sh
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      user-date: ${{ steps.user-data.outputs.user-data }}
+      runner-name: ${{ steps.user-data.outputs.runner-name }}
+      linode-id: ${{ steps.linode-instance.outputs.linode-id }}
+      label: ${{ steps.vars.outputs.label }}
+      tag: ${{ steps.vars.outputs.tag }}
+      owner: ${{ steps.vars.outputs.owner }}
+      repo: ${{ steps.vars.outputs.repo }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - id: vars
+        shell: bash
+        run: |-
+          IFS='/' read -r OWNER REPO <<< "$GITHUB_REPOSITORY"
+          read -d - UUID <<< $(uuidgen)
+          echo "owner=${OWNER}" >> $GITHUB_OUTPUT
+          echo "repo=${REPO}" >> $GITHUB_OUTPUT
+          echo "label=${REPO}-${UUID}" >> $GITHUB_OUTPUT
+          echo "tag=${REPO}-${UUID}-test" >> $GITHUB_OUTPUT
+
+      - id: user-data
+        uses: rylabs-billy/action-runner-userdata@v1.0.0
+        with:
+          scope: repository
+          repo: ${{ steps.vars.outputs.repo }}
+          owner: ${{ steps.vars.outputs.owner }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - id: linode-instance
+        uses: rylabs-billy/action-linode-instance@v1.0.0
+        with:
+          token: ${{ secrets.LINODE_TOKEN }}
+          label: ${{ steps.vars.outputs.label }}
+          ssh-key: ${{ secrets.SSH_KEY }}
+          user-data: ${{ steps.user-data.outputs.user-data }}
+          tag: ${{ steps.vars.outputs.tag }}
+
+  build:
+    runs-on: self-hosted
+    if: ${{ needs.setup.result == 'success' }}
+    needs: setup
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set test UDFs
+        shell: bash
+        run: ./scripts/test-vars.sh
+
+      - name: Deploy playbook
+        shell: bash
+        run: ./scripts/kafka-deploy.sh
+        env:
+          LINODE_ID: ${{ needs.setup.outputs.linode-id }}
+          TOKEN_PASSWORD: ${{ secrets.LINODE_TOKEN }}
+
+      - name: Validate playbook success
+        shell: bash
+        run: |-
+          if [ -n "$PLAYBOOK_FAIL" ]; then
+            OUTPUT=$(cat /var/log/stackscript.log | grep -i failed | tail)
+            echo -e "::error title=playbook failed::$OUTPUT\n"
+            exit 1
+          fi
+
+  cleanup:
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+     - setup
+     - build
+    steps:
+      - name: Remove self-hosted runner
+        shell: bash
+        run: |-
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /repos/$OWNER/$REPO/actions/runners
+        env:
+          REPO: ${{ needs.setup.outputs.repo }}
+          OWNER: ${{ needs.setup.outputs.owner }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          
+      - name: Install the linode cli
+        uses: linode/action-linode-cli@v1
+        with:
+          token: ${{ secrets.LINODE_TOKEN }}
+
+      - name: Remove linodes
+        shell: bash
+        run: |-
+          LINODE_IDS=($(linode-cli linodes list --tags $TAG --json | jq -r .[].id))
+          for linode in ${LINODE_IDS[@]}; do
+            linode-cli linodes delete $linode
+          done
+        env:
+          TAG: ${{ needs.setup.outputs.tag }}
