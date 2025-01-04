@@ -39,5 +39,4 @@ set_vars() {
 }
 
 # main
-build_dict
 set_vars
