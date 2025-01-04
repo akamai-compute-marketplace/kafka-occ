@@ -59,7 +59,7 @@
 
 - name: format data directory for controller and broker nodes
   command:
-    cmd: "{{ kafka_bin_directory }}/kafka-storage.sh format -t {{ cluster_uuid.stdout }} -c {{ kafka_config_directory }}/config/kraft/server.properties"
+    cmd: "{{ kafka_bin_directory }}/kafka-storage.sh format -t {{ cluster_uuid.stdout }} -c {{ kafka_config_directory }}/config/kraft/server.properties --ignore-formatted"
   become: true
   become_user: kafka
   run_once: true
