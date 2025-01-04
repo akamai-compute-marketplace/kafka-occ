@@ -1,0 +1,65 @@
+name: check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: bool
+        description: 'Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)'
+        required: false
+        default: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set git repo and branch environment variables
+        shell: bash
+        run: |-
+          echo "[info] git repo: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          echo "GIT_REPO=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" >> $GITHUB_ENV
+
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "[info] git branch: $GITHUB_REF_NAME"
+            echo "BRANCH=$GITHUB_REF_NAME" >> $GITHUB_ENV
+          fi
+
+      - name: Set test UDFs
+        shell: bash
+        run: ./scripts/test-vars.sh
+
+      - name: Update runner ssh configs
+        shell: bash
+        run: |-
+          # update ssh for localhost connections via ansible 
+          declare -A ssh_dict
+          ssh_dict["#ListenAddress 0.0.0.0"]="ListenAddress 0.0.0.0"
+          ssh_dict["PermitRootLogin yes"]="PermitRootLogin no"
+          ssh_dict["#PermitRootLogin no"]="PermitRootLogin no"
+          ssh_dict["#PubkeyAuthentication yes"]="PubkeyAuthentication yes"
+          ssh_dict["#PasswordAuthentication no"]="PasswordAuthentication no"
+          ssh_dict["PasswordAuthentication yes"]="PasswordAuthentication no"
+          ssh_dict["#PasswordAuthentication yes"]="PasswordAuthentication no"
+
+          for conf in "${!ssh_dict[@]}"; do
+            sudo sed -i -e "s/${conf}/${ssh_dict[$conf]}/g" /etc/ssh/sshd_config
+          done
+          sudo systemctl restart ssh
+
+      - name: Run deploy script in check mode
+        shell: bash
+        run: sudo -E ./scripts/kafka-deploy.sh
+        env:
+          TOKEN_PASSWORD: 9ff48ad7
+          CHECK_MODE: 1
+
+      - name: Setup tmate session for debugging
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
