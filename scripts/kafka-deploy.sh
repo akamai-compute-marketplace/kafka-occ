@@ -24,7 +24,8 @@ fi
 # <UDF name="ca_common_name" label="CA Common Name" example="Example: Kafka RootCA" />
 
 # git repo
-export GIT_REPO="https://github.com/akamai-compute-marketplace/kafka-occ.git"
+# testing: set the $GIT_REPO environment variable
+[ -z "${GIT_REPO}" ] && export GIT_REPO="https://github.com/akamai-compute-marketplace/kafka-occ.git"
 export WORK_DIR="/tmp/linode" 
 export UUID=$(uuidgen | awk -F - '{print $1}')
 
@@ -51,8 +52,23 @@ else
   exit 1
 fi
 
-# cluster functions
+function chk_mode {
+  if [ "${CHECK_MODE}" == "1" ]; then
+    local user=$(whoami)
+    local sshkey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5A bthompson@linode.com"
 
+    echo "[info] running check mode as $user user"
+    export LINODE_IP="192.168.0.2"
+    export INSTANCE_PREFIX="kafka-occ1-${UUID}"
+
+    [ "${user}" == 'root' ] && HOME_DIR="/root" || HOME_DIR="${HOME}"
+    [ ! -d "${HOME_DIR}/.ssh" ] && mkdir -p "${HOME_DIR}/.ssh"
+    echo "${sshkey}" >> "${HOME_DIR}/.ssh/authorized_keys"
+    export _SSH_AUTH=$(cat "${HOME_DIR}/.ssh/authorized_keys")
+  fi
+}
+
+# cluster functions
 function add_privateip {
   echo "[info] Adding instance private IP"
   curl -H "Content-Type: application/json" \
@@ -70,27 +86,49 @@ function get_privateip {
    https://api.linode.com/v4/linode/instances/${LINODE_ID}/ips | \
    jq -r '.ipv4.private[].address'
 }
+
 function configure_privateip {
-  LINODE_IP=$(get_privateip)
-  if [ ! -z "${LINODE_IP}" ]; then
-          echo "[info] Linode private IP present"
-  else
-          echo "[warn] No private IP found. Adding.."
-          add_privateip
-          LINODE_IP=$(get_privateip)
-          ip addr add ${LINODE_IP}/17 dev eth0 label eth0:1
+  if [ -z "${1}" ]; then
+    LINODE_IP=$(get_privateip)
+
+    if [ -n "${LINODE_IP}" ]; then
+      echo "[info] Linode private IP present"
+    else
+      echo "[warn] No private IP found. Adding.."
+      add_privateip
+      LINODE_IP=$(get_privateip)
+      ip addr add ${LINODE_IP}/17 dev eth0 label eth0:1
+    fi
   fi
 }
+
 function rename_provisioner {
-  INSTANCE_PREFIX=$(curl -sH "Authorization: Bearer ${TOKEN_PASSWORD}" "https://api.linode.com/v4/linode/instances/${LINODE_ID}" | jq -r .label)
-  export INSTANCE_PREFIX=${INSTANCE_PREFIX}
   echo "[info] renaming the provisioner"
-  curl -s -H "Content-Type: application/json" \
+  if [ -z "${1}" ]; then
+    INSTANCE_PREFIX=$(curl -sH "Authorization: Bearer ${TOKEN_PASSWORD}" "https://api.linode.com/v4/linode/instances/${LINODE_ID}" | jq -r .label)
+    export INSTANCE_PREFIX=${INSTANCE_PREFIX}
+    curl -s -H "Content-Type: application/json" \
       -H "Authorization: Bearer ${TOKEN_PASSWORD}" \
       -X PUT -d "{
         \"label\": \"${INSTANCE_PREFIX}1-${UUID}\"
-      }" \
-      https://api.linode.com/v4/linode/instances/${LINODE_ID}
+      }" https://api.linode.com/v4/linode/instances/${LINODE_ID}
+  fi
+}
+
+function add_ssh_keys {
+  if [ "${ADD_SSH_KEYS}" == "yes" ]; then
+    echo "[info] getting profile ssh keys"
+    if [ ! -d ~/.ssh ] ; then
+      mkdir ~/.ssh
+    fi
+
+    if [ -z "${1}" ]; then
+      curl -sH "Content-Type: application/json" \
+        -H "Authorization: Bearer ${TOKEN_PASSWORD}" \
+        https://api.linode.com/v4/profile/sshkeys \
+        | jq -r .data[].ssh_key > /root/.ssh/authorized_keys
+    fi
+  fi
 }
 
 function setup {
@@ -98,41 +136,46 @@ function setup {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get install -y git python3 python3-pip python3-venv jq
+  chk_mode
 
   # rename provisioner and configure private IP if not present
-  rename_provisioner
-  configure_privateip 
-  if [ "${ADD_SSH_KEYS}" == "yes" ]; then
-    if [ ! -d ~/.ssh ] ; then
-      mkdir ~/.ssh
-    fi
-    curl -sH "Content-Type: application/json" -H "Authorization: Bearer ${TOKEN_PASSWORD}" https://api.linode.com/v4/profile/sshkeys | jq -r .data[].ssh_key > /root/.ssh/authorized_keys
-  fi  
+  rename_provisioner "${INSTANCE_PREFIX}"
+  configure_privateip "${LINODE_IP}"
+  add_ssh_keys "${_SSH_AUTH}"
 
   # clone repo and set up ansible environment
-  git clone ${GIT_REPO} ${WORK_DIR}
-  # for a single testing branch
-  # git clone -b ${BRANCH} ${GIT_REPO} ${WORK_DIR}
+  # testing: set $BRANCH environment variable
+  echo "[info] cloning git repo"
+  if [ -z "${BRANCH}" ]; then 
+    git clone ${GIT_REPO} ${WORK_DIR}
+  else
+    git clone -b ${BRANCH} ${GIT_REPO} ${WORK_DIR}
+  fi
 
   # venv
   cd ${WORK_DIR}
+
   #pip3 install virtualenv
+  echo "[info] building python env"
   python3 -m venv env
   source env/bin/activate
   pip install pip --upgrade
   pip install -r requirements.txt
   ansible-galaxy install -r collections.yml
+
   # copy run script
+  echo "[info] copy run script to \$PATH"
   cp scripts/run.sh /usr/local/bin/run
   chmod +x /usr/local/bin/run
 }
-function installation_complete {
-  echo "Installation Complete"
-}
+
 # main
 setup
-run build
-run deploy && installation_complete
-if [ "${DEBUG}" == "NO" ]; then
-  cleanup
+if [ "${CHECK_MODE}" == "1" ]; then
+  run test
+else
+  run build
+  run deploy
+  echo "Installation Complete"
+  [ "${DEBUG}" == "NO" ] && cleanup
 fi
