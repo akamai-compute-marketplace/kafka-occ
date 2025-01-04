@@ -8,6 +8,9 @@
 # environment, but that is not the case with local testing or CI environment.
 # You will also have to set this separately.
 
+# NOTE: For local testing, manually set the $BRANCH and $GIT_REPO environment
+# variables as needed.
+
 declare -A UDF_VARS
 UDF_VARS["KAFKA_VERSION"]="3.8.0"
 UDF_VARS["SUDO_USERNAME"]="admin"
