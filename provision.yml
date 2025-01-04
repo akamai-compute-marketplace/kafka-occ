@@ -40,6 +40,7 @@
         ca_password: "{{ lookup('password', '/dev/null length=25 chars=ascii_letters,digits') }}"
         sudo_password: {{ lookup('password', '/dev/null length=25 chars=ascii_letters,digits') }}
     no_log: true
+    tags: test
 
   - name: creating kafka servers
     linode.cloud.instance:
@@ -79,6 +80,7 @@
                 ip_pub1: {{ info.results[count].instance.ipv4[0] }}
                 ip_priv1: {{ info.results[count].instance.ipv4[1] }}
             {%- endfor %}
+    tags: test
 
   - name: add kafka nodes to inventory
     blockinfile:
@@ -91,6 +93,7 @@
         {%- for count in range(cluster_size - 1) %}
         {{ info.results[count + 1].instance.ipv4[0] }} {% if count < controller_count - 1 %}role='controller and broker'{%else%}role='broker only'{%endif%}
         {%- endfor %}
+    tags: test
 
   - name: wait for port 22 to become open
     wait_for:
