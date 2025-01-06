@@ -15,15 +15,20 @@ function controller_sshkey {
     chmod 600 ${SSH_KEY_PATH}
     eval $(ssh-agent)
     ssh-add ${SSH_KEY_PATH}
+    test:check
 }
+
 # build instance vars before cluster deployment
 function build {
-  local KAFKA_VERSION="${KAFKA_VERSION}"
   local LINODE_PARAMS=($(curl -sH "Authorization: Bearer ${TOKEN_PASSWORD}" "https://api.linode.com/v4/linode/instances/${LINODE_ID}" | jq -r .label,.type,.region,.image))
   local LINODE_TAGS=$(curl -sH "Authorization: Bearer ${TOKEN_PASSWORD}" "https://api.linode.com/v4/linode/instances/${LINODE_ID}" | jq -r .tags)
+  local KAFKA_VERSION="${KAFKA_VERSION}"
   local group_vars="${WORK_DIR}/group_vars/kafka/vars"
   local TEMP_ROOT_PASS=$(openssl rand -base64 32)
-controller_sshkey
+
+  test:check
+  controller_sshkey
+
   cat << EOF >> ${group_vars}
 # user vars
 sudo_username: ${SUDO_USERNAME}
@@ -59,9 +64,12 @@ function deploy {
 }
 
 ## cleanup ##
-
 function cleanup {
   if [ "$?" != "0" ]; then
+    echo "Error: $BASH_COMMAND failed with exit code $?"
+    if [ -n "$GITHUB_ENV" ]; then
+      echo "PLAYBOOK_FAILED=1" | tee -a $GITHUB_ENV
+    fi
     echo "PLAYBOOK FAILED. See /var/log/stackscript.log for details."
     rm ${HOME}/.ssh/id_ansible_ed25519{,.pub}
     destroy
@@ -74,8 +82,65 @@ function destroy {
   ansible-playbook destroy.yml
 }
 
+# test functions
+function test:check {
+  if [ $"${CHECK_MODE}" == "1" ]; then
+    # get name of caller (parent) function
+    local name="${FUNCNAME[0]}"
+    local caller="${FUNCNAME[1]}"
+    local user=$(whoami)
+    echo "[info] $name $caller"
+
+    if [ "${caller}" == "controller_sshkey" ]; then
+      [ "${user}" == 'root' ] && HOME_DIR="/root" || HOME_DIR="${HOME}"
+      echo $ANSIBLE_SSH_PUB_KEY >> ${HOME_DIR}/.ssh/authorized_keys
+    fi
+
+    if [ "${caller}" == "build" ]; then
+      export LINODE_PARAMS=("${INSTANCE_PREFIX}" "g6-standard-8" "us-ord" "linode/ubuntu22.04")
+      export LINODE_TAGS="test"
+    fi
+  fi
+}
+
+function test:instance_info {
+  echo "[info] ${FUNCNAME[0]}"
+  # for provision.yml in check mode
+  echo -e "info:\n  results:" > info.yml
+  count=100
+
+  for host in $(seq $CLUSTER_SIZE); do
+    echo -e '    - {"instance": {"ipv4": ["127.1.0.'$count'", "127.2.0.'$count'"]}}' >> info.yml
+    ((count++))
+  done
+}
+
+function test:provision {
+  test:instance_info
+  echo "[info] ${FUNCNAME[0]}"
+  ansible-playbook -v -i hosts provision.yml --check --extra-vars "@info.yml"
+}
+
+function test:site {
+  echo "[info] ${FUNCNAME[0]}"
+  # run just a couple tagged tasks to write dependent vars and files...  
+  ansible-playbook -v -i hosts provision.yml --tags test --extra-vars "@info.yml"
+  ansible-playbook -v -i hosts site.yml --become --tags test --forks 1 # --forks 1: prevent race condition from parallel processes writing the same file 
+  # then run site.yml in check mode
+  ansible-playbook -vv -i hosts site.yml --become --check
+
+}
+
+function test {
+  echo "[info] running ansible playbooks in check mode"
+  build
+  test:provision
+  test:site
+}
+
 # main
 case $1 in
     build) "$@"; exit;;
     deploy) "$@"; exit;;
+    test) "$@"; exit;;
 esac
