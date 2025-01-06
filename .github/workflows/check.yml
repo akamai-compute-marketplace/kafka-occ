@@ -32,7 +32,7 @@ jobs:
             BRANCH="$GITHUB_REF_NAME"
           fi
 
-          echo "[info] git branch: $GITHUB_REF_NAME"$GITHUB_REF_NAME
+          echo "[info] git branch: $BRANCH"
           echo "BRANCH=$BRANCH" >> $GITHUB_ENV
 
       - name: Set test UDFs
