@@ -26,10 +26,14 @@ jobs:
           echo "[info] git repo: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           echo "GIT_REPO=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" >> $GITHUB_ENV
 
-          if [ "$GITHUB_REF_NAME" != "main" ]; then
-            echo "[info] git branch: $GITHUB_REF_NAME"
-            echo "BRANCH=$GITHUB_REF_NAME" >> $GITHUB_ENV
+          if [ "$GITHUB_EVENT_NAME" == "pull_request" ]; then
+            BRANCH="$GITHUB_BASE_REF"
+          elif [ "$GITHUB_REF_NAME" != "main" ]; then
+            BRANCH="$GITHUB_REF_NAME"
           fi
+
+          echo "[info] git branch: $GITHUB_REF_NAME"$GITHUB_REF_NAME
+          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
 
       - name: Set test UDFs
         shell: bash
